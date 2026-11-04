@@ -94,7 +94,7 @@ class ConexionService : Service() {
         /** Descarga el clima y lo manda al reloj (si pasó más de una hora o si se fuerza). */
         fun updateWeather(context: Context, force: Boolean, onDone: ((String) -> Unit)? = null) {
             val s = WatchManager.settings
-            if (s.cityName.isBlank()) { onDone?.invoke("Primero elige tu ciudad."); return }
+            if (s.cityName.isBlank()) { WatchManager.dlog("clima: falta elegir ciudad"); onDone?.invoke("Primero elige tu ciudad."); return }
             if (!force && (!s.weatherAuto || System.currentTimeMillis() - s.lastWeather < 55 * 60_000L)) return
             Thread {
                 try {
@@ -103,12 +103,13 @@ class ConexionService : Service() {
                         WatchManager.sendWeather(w, s.cityName) { ok ->
                             onDone?.invoke(
                                 if (ok) "Clima enviado: ${w.temp}° en ${s.cityName}."
-                                else "El reloj no está conectado o no aceptó el clima."
+                                else "El reloj no aceptó el clima. Revisa el diagnóstico en Ajustes."
                             )
                         }
                     }
                 } catch (e: Exception) {
                     Log.w("Reloj", "clima", e)
+                    Handler(Looper.getMainLooper()).post { WatchManager.dlog("clima: no se pudo descargar: $e") }
                     onDone?.invoke("No pude descargar el clima. Revisa tu conexión a internet.")
                 }
             }.start()

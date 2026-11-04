@@ -357,9 +357,7 @@ object WatchManager {
     /** Enciende en el reloj los avisos de llamadas y de todas las apps. */
     fun enableNoticesOnWatch() {
         if (_conn.value != Conn.CONECTADO || !_bound.value) return
-        Cmds.setNoticeStatus(IDOSetNoticeStatusModel.createDefaultModel()).send { r ->
-            Log.d(TAG, "avisos encendidos: ${r.error.code}")
-        }
+        step("Avisos: encender", Cmds.setNoticeStatus(IDOSetNoticeStatusModel.createDefaultModel()))
     }
 
     private var lastNoticeKey = ""
@@ -467,18 +465,86 @@ object WatchManager {
         IDOEpoManager.shared.willStartInstall(true, 1)
     }
 
+    // ---------- Registro de diagnóstico ----------
+
+    private val _log = MutableStateFlow<List<String>>(emptyList())
+    val log: StateFlow<List<String>> = _log.asStateFlow()
+
+    fun dlog(text: String) {
+        Log.d(TAG, text)
+        val t = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        _log.value = (_log.value + "$t $text").takeLast(400)
+    }
+
+    fun clearLog() { _log.value = emptyList() }
+
+    /** El reloj terminó de prepararse después de conectar (ya tiene su lista de funciones). */
+    private val _protocolReady = MutableStateFlow(false)
+    private var afterReadyDone = false
+
+    /** Lo que se hace una vez por conexión, cuando el reloj ya está listo. */
+    private fun afterReady(why: String) {
+        if (afterReadyDone || _conn.value != Conn.CONECTADO) return
+        afterReadyDone = true
+        _protocolReady.value = true
+        dlog("reloj listo ($why)")
+        refreshInfo()
+        if (_bound.value) {
+            enableNoticesOnWatch()
+            main.postDelayed({ enableMusicOnWatch() }, 1500)
+            main.postDelayed({ onConnectedHook?.invoke() }, 3000)
+        }
+    }
+
+    private fun describe(res: Any?): String = when (res) {
+        null -> "-"
+        is IDOBaseModel -> res.toJsonString()
+        else -> res.toString()
+    }
+
+    /**
+     * Envía un comando, anota qué se mandó y qué respondió el reloj, y sigue con [next].
+     * Si el reloj no responde en 8 s, sigue igual (así una falla no deja todo colgado).
+     */
+    private fun <T> step(
+        name: String,
+        cmd: com.idosmart.protocol_sdk.CmdProtocol<T>,
+        next: (code: Int, res: T?) -> Unit = { _, _ -> }
+    ) {
+        val sent = (cmd as? com.idosmart.pigeon_implement.CmdProtocolParam)?.json.orEmpty()
+        var answered = false
+        val timeout = Runnable {
+            if (!answered) { answered = true; dlog("$name → SIN RESPUESTA en 8 s"); next(-999, null) }
+        }
+        main.postDelayed(timeout, 8000)
+        cmd.send { r ->
+            main.post {
+                if (answered) return@post
+                answered = true
+                main.removeCallbacks(timeout)
+                dlog("$name → código ${r.error.code}${r.error.message?.let { " ($it)" } ?: ""} | respuesta ${describe(r.res).take(400)} | enviado ${sent.take(300)}")
+                next(r.error.code, r.res)
+            }
+        }
+    }
+
+    /** Un comando "set" funcionó si no hubo error y el reloj no dijo isSuccess = 0. */
+    private fun setOk(code: Int, res: Any?): Boolean =
+        code == 0 && (res !is com.idosmart.pigeon_implement.IDOCmdSetResponseModel || res.isSuccess != 0)
+
     // ---------- Música ----------
 
-    /** Lo que pasó con la música, para la pantalla de diagnóstico. */
     private val _musicDebug = MutableStateFlow("Todavía no se envió nada.")
     val musicDebug: StateFlow<String> = _musicDebug.asStateFlow()
-    fun noteMusic(text: String) { _musicDebug.value = text }
+    fun noteMusic(text: String) { _musicDebug.value = text; dlog("música: $text") }
+
+    private var musicModeOn = false
 
     fun enableMusicOnWatch() {
         if (!ready) { noteMusic("No se envió: el reloj no está conectado."); return }
-        Cmds.setMusicOnOff(IDOMusicOnOffParamModel(1, 1)).send { r ->
-            Log.d(TAG, "música en el reloj: ${r.error.code}")
-            noteMusic("Música activada en el reloj: código ${r.error.code}")
+        step("Música: activar", Cmds.setMusicOnOff(IDOMusicOnOffParamModel(1, 1))) { c, r ->
+            noteMusic(if (setOk(c, r)) "Música activada en el reloj." else "El reloj no activó la música (código $c).")
+            musicModeOn = false
             MusicBridge.send(force = true)
         }
     }
@@ -486,10 +552,24 @@ object WatchManager {
     /** status: 1 sonando, 2 pausa, 3 detenido. */
     fun sendMusic(status: Int, pos: Int, total: Int, title: String, artist: String) {
         if (!ready) return
-        val p = IDOMusicControlParamModel(status, pos, total, title.take(60), artist.take(60))
-        Cmds.musicControl(p).send { r ->
-            noteMusic("Última canción enviada: \"${title.ifBlank { "(sin título)" }}\" — código ${r.error.code}")
+        val control = {
+            val p = IDOMusicControlParamModel(status, pos, total, title.take(60), artist.take(60))
+            step("Música: canción", Cmds.musicControl(p)) { c, r ->
+                noteMusic(
+                    if (setOk(c, r)) "Enviado al reloj: \"${title.ifBlank { "(sin título)" }}\""
+                    else "El reloj no aceptó la canción (código $c)."
+                )
+            }
         }
+        // Algunos relojes IDO solo muestran la música si el teléfono avisa que hay un reproductor activo
+        if (status == 1 && !musicModeOn) {
+            musicModeOn = true
+            step("Música: inicio", Cmds.musicStart()) { _, _ -> control() }
+        } else if (status == 3 && musicModeOn) {
+            musicModeOn = false
+            control()
+            step("Música: fin", Cmds.musicStop())
+        } else control()
     }
 
     // ---------- Menú del reloj ----------
@@ -501,20 +581,18 @@ object WatchManager {
 
     fun loadMenu() {
         if (!ready) { say("El reloj no está conectado."); return }
-        val ft = sdk.funcTable
-        if (ft.supportProtocolV3MenuList) {
-            Cmds.getMenuListV3().send { r ->
-                val m = r.res
-                if (r.error.code == 0 && m != null) {
-                    _menu.value = Menu((m.itemList ?: emptyList()).filter { it > 0 }, m.minShowNum, m.maxShowNum.takeIf { it > 0 } ?: m.supportMaxNum, true)
-                } else say("El reloj no entregó su menú (${r.error.code}).")
-            }
-        } else {
-            Cmds.getMenuList().send { r ->
-                val m = r.res
-                if (r.error.code == 0 && m != null) {
-                    _menu.value = Menu((m.items ?: emptyList()).sortedBy { it.index }.map { it.value }.filter { it > 0 }, m.minShowNum, m.maxShowNum.takeIf { it > 0 } ?: m.maxNum, false)
-                } else say("Tu reloj no permite leer el menú (${r.error.code}).")
+        // Prueba primero el formato nuevo y, si el reloj no lo entiende, el antiguo
+        step("Menú V3: leer", Cmds.getMenuListV3()) { c, m ->
+            val list = m?.itemList?.filter { it > 0 }.orEmpty()
+            if (c == 0 && m != null && list.isNotEmpty()) {
+                _menu.value = Menu(list, m.minShowNum, m.maxShowNum.takeIf { it > 0 } ?: m.supportMaxNum, true)
+            } else {
+                step("Menú V2: leer", Cmds.getMenuList()) { c2, m2 ->
+                    val l2 = m2?.items?.sortedBy { it.index }?.map { it.value }?.filter { it > 0 }.orEmpty()
+                    if (c2 == 0 && m2 != null && l2.isNotEmpty()) {
+                        _menu.value = Menu(l2, m2.minShowNum, m2.maxShowNum.takeIf { it > 0 } ?: m2.maxNum, false)
+                    } else say("Tu reloj no entregó su menú (V3: $c, V2: $c2). Mira el diagnóstico.")
+                }
             }
         }
     }
@@ -524,34 +602,19 @@ object WatchManager {
         val m = _menu.value
         if (m != null && m.min > 0 && items.size < m.min) { say("El reloj necesita al menos ${m.min} pantallas."); return }
         if (m != null && m.max > 0 && items.size > m.max) { say("Tu reloj acepta hasta ${m.max} pantallas."); return }
-        val done: (Int) -> Unit = { code ->
-            if (code == 0) { _menu.value = m?.copy(items = items); say("Menú actualizado en el reloj.") }
-            else say("El reloj no aceptó el menú ($code). Puede que alguna pantalla no exista en tu modelo.")
+        val ok = { _menu.value = m?.copy(items = items); say("Menú guardado. Desliza en el reloj para verlo.") }
+        val first: (Boolean) -> Unit = { v3 ->
+            if (v3) step("Menú V3: guardar", Cmds.setMenuListV3(items)) { c, r ->
+                if (setOk(c, r)) ok() else step("Menú V2: guardar", Cmds.setMenuList(IDOMenuListParamModel(items))) { c2, r2 ->
+                    if (setOk(c2, r2)) ok() else say("El reloj no aceptó el menú (V3: $c, V2: $c2). Puede que alguna pantalla no exista en tu modelo.")
+                }
+            } else step("Menú V2: guardar", Cmds.setMenuList(IDOMenuListParamModel(items))) { c, r ->
+                if (setOk(c, r)) ok() else step("Menú V3: guardar", Cmds.setMenuListV3(items)) { c2, r2 ->
+                    if (setOk(c2, r2)) ok() else say("El reloj no aceptó el menú (V2: $c, V3: $c2). Puede que alguna pantalla no exista en tu modelo.")
+                }
+            }
         }
-        if (m?.v3 != false && sdk.funcTable.supportProtocolV3MenuList) {
-            Cmds.setMenuListV3(items).send { r -> done(r.error.code) }
-        } else {
-            Cmds.setMenuList(IDOMenuListParamModel(items)).send { r -> done(r.error.code) }
-        }
-    }
-
-    /** Resumen de lo que declara soportar el firmware (para diagnóstico). */
-    fun capabilities(): List<Pair<String, Boolean>> {
-        if (_conn.value != Conn.CONECTADO) return emptyList()
-        val f = sdk.funcTable
-        return listOf(
-            "Control de música" to f.setBleControlMusic,
-            "Música V3" to f.getSupportV3BleMusic,
-            "Clima V3" to f.setSetV3Weather,
-            "Clima V2" to f.supportSetWeatherDataV2,
-            "Ciudad del clima" to f.setWeatherCity,
-            "Menú V3" to f.supportProtocolV3MenuList,
-            "Menú V2" to f.getMenuList,
-            "Avisos (ANCS)" to f.reminderAncs,
-            "Brillo" to f.setScreenBrightness,
-            "Levantar para ver" to f.getUpHandGesture,
-            "Esferas con foto" to f.setWallpaperDial,
-        )
+        first(m?.v3 ?: true)
     }
 
     // ---------- Clima ----------
@@ -560,19 +623,14 @@ object WatchManager {
     val weatherInfo: StateFlow<String> = _weatherInfo.asStateFlow()
 
     fun sendWeather(w: WeatherNow, city: String, onDone: (Boolean) -> Unit = {}) {
-        if (!ready) { onDone(false); return }
-        Cmds.setWeatherSwitch(true).send { }
+        if (!ready) { dlog("clima: no enviado, reloj no listo"); onDone(false); return }
         val now = java.time.LocalDateTime.now()
-        val done: (Int) -> Unit = { code ->
-            val ok = code == 0
-            if (ok) {
-                settings.lastWeather = System.currentTimeMillis()
-                _weatherInfo.value = "$city: ${w.temp}° (${w.min}°/${w.max}°)"
-            }
-            onDone(ok)
+        val ok = {
+            settings.lastWeather = System.currentTimeMillis()
+            _weatherInfo.value = "$city: ${w.temp}° (${w.min}°/${w.max}°)"
+            onDone(true)
         }
-        if (sdk.funcTable.setSetV3Weather) {
-            // Formato V3: las temperaturas van con +100, igual que el ejemplo oficial de IDO
+        val v3 = {
             val p = IDOWeatherV3ParamModel(
                 now.monthValue, now.dayOfMonth, now.hour, now.minute, now.second,
                 now.dayOfWeek.value,
@@ -584,20 +642,79 @@ object WatchManager {
                 w.sunrise.first, w.sunrise.second, w.sunset.first, w.sunset.second,
                 w.sunTimes.size.coerceAtMost(7),
                 "",
-                w.hours.map { IDOHoursWeatherItem(it.type, it.temp + 100, it.rain) },
+                w.hours.take(24).map { IDOHoursWeatherItem(it.type, it.temp + 100, it.rain) },
                 w.days.drop(1).take(6).map { IDOFutureItem(it.type, it.max + 100, it.min + 100) },
                 w.sunTimes.take(7).map { IDOSunriseItem(it.first.first, it.first.second, it.second.first, it.second.second) },
                 emptyList(),
                 emptyList()
             )
-            Cmds.setWeatherV3(p).send { r -> done(r.error.code) }
-        } else {
+            step("Clima V3", Cmds.setWeatherV3(p))
+        }
+        val v2 = {
             val p = IDOWeatherDataParamModel(
                 w.type, w.temp, w.max, w.min, w.humidity, w.uv, 0,
                 w.days.drop(1).take(3).map { IDOWeatherDataFuture(it.type, it.min, it.max) }
             )
-            Cmds.setWeatherCityName(city.take(30)).send { }
-            Cmds.setWeatherData(p).send { r -> done(r.error.code) }
+            step("Clima V2", Cmds.setWeatherData(p))
+        }
+        // Enciende el clima en el reloj, manda la ciudad y prueba los dos formatos
+        step("Clima: encender", Cmds.setWeatherSwitch(true)) { _, _ ->
+            step("Clima: ciudad", Cmds.setWeatherCityName(city.take(30))) { _, _ ->
+                val preferV3 = sdk.funcTable.setSetV3Weather || !sdk.funcTable.supportSetWeatherDataV2
+                val a = if (preferV3) v3 else v2
+                val b = if (preferV3) v2 else v3
+                step("Clima: ${if (preferV3) "V3" else "V2"}", a()) { c, r ->
+                    if (setOk(c, r)) ok()
+                    else step("Clima: ${if (preferV3) "V2" else "V3"} (respaldo)", b()) { c2, r2 ->
+                        if (setOk(c2, r2)) ok() else onDone(false)
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------- Prueba completa ----------
+
+    fun runDiagnostics(notifAccess: Boolean) {
+        clearLog()
+        dlog("=== Diagnóstico Mi Reloj ===")
+        dlog("Conexión: ${_conn.value}, vinculado: ${_bound.value}, preparado: ${_protocolReady.value}")
+        dlog("Acceso a notificaciones: ${if (notifAccess) "SÍ" else "NO"}")
+        dlog("Música en el teléfono: ${_musicDebug.value}")
+        if (_conn.value != Conn.CONECTADO) { dlog("El reloj no está conectado. Conéctalo y repite."); return }
+        val d = sdk.device
+        dlog("Reloj: ${d.deviceName} id=${d.deviceId} plataforma=${d.platform} fw=${d.fwVersion1}.${d.fwVersion2}.${d.fwVersion3}")
+        try {
+            val ft = sdk.funcTable
+            val on = ft.javaClass.methods
+                .filter { it.parameterCount == 0 && it.returnType == java.lang.Boolean.TYPE && it.name.startsWith("get") }
+                .filter { runCatching { it.invoke(ft) as Boolean }.getOrDefault(false) }
+                .map { it.name.removePrefix("get") }
+                .sorted()
+            dlog("Funciones activas (${on.size}): ${on.joinToString(", ")}")
+            dlog("Alarmas máx: ${ft.alarmCount}")
+        } catch (e: Exception) {
+            dlog("No pude leer la lista de funciones: $e")
+        }
+        step("Menú V3: leer", Cmds.getMenuListV3()) { _, _ ->
+            step("Menú V2: leer", Cmds.getMenuList()) { _, _ ->
+                step("Música: activar", Cmds.setMusicOnOff(IDOMusicOnOffParamModel(1, 1))) { _, _ ->
+                    step("Música: inicio", Cmds.musicStart()) { _, _ ->
+                        val p = IDOMusicControlParamModel(1, 30, 200, "Prueba Mi Reloj", "Diagnóstico")
+                        step("Música: canción de prueba", Cmds.musicControl(p)) { _, _ ->
+                            val w = WeatherNow(
+                                1, 21, 25, 12, 40, 0, 3, 10, 7 to 0, 20 to 30,
+                                List(7) { DayForecast(1, 25, 12) }, List(24) { HourForecast(1, 21, 0) },
+                                List(7) { (7 to 0) to (20 to 30) }
+                            )
+                            sendWeather(w, settings.cityName.ifBlank { "Prueba" }) { ok ->
+                                dlog("Clima de prueba: ${if (ok) "ACEPTADO" else "RECHAZADO"}")
+                                dlog("=== Fin. Toca Copiar y pégalo en el chat. ===")
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -678,9 +795,11 @@ object WatchManager {
                     userDisconnect = false
                     main.postDelayed({ refreshLive() }, 1500)
                     // Al reconectar, manda el clima si ya está viejo y la canción actual
-                    main.postDelayed({ onConnectedHook?.invoke() }, 4000)
-                    main.postDelayed({ enableMusicOnWatch() }, 6000)
-                    main.postDelayed({ refreshInfo() }, 3000)
+                    // Espera a que el reloj termine de prepararse (lista de funciones) antes de mandarle cosas.
+                    // Si no avisa, sigue igual a los 12 s.
+                    _protocolReady.value = false
+                    afterReadyDone = false
+                    main.postDelayed({ afterReady("tiempo de espera") }, 12_000)
                 }
                 IDODeviceStateType.CONNECTING -> _conn.value = Conn.CONECTANDO
                 else -> {
@@ -718,8 +837,10 @@ object WatchManager {
 
     private val bridgeDelegate = object : IDOBridgeDelegate {
         override fun listenStatusNotification(status: IDOStatusNotification) {
-            Log.d(TAG, "aviso: $status")
+            dlog("aviso del reloj: $status")
             when (status) {
+                IDOStatusNotification.FASTSYNCCOMPLETED,
+                IDOStatusNotification.FASTSYNCFAILED -> main.postDelayed({ afterReady(status.name) }, 800)
                 IDOStatusNotification.UNBINDONAUTHCODEERROR,
                 IDOStatusNotification.UNBINDONBINDSTATEERROR -> {
                     store.clearDevice()

@@ -3,6 +3,7 @@ package com.coopercpu.reloj.ui
 import android.app.TimePickerDialog
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ViewCarousel
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.ArrowUpward
@@ -143,6 +145,12 @@ fun AjustesScreen(notifAccess: Boolean, onOpenNotifAccess: () -> Unit) {
         }
         item {
             Seccion("Alarmas", Icons.Filled.Alarm, open == "alarmas", { toggle("alarmas") }) { AlarmasPanel() }
+        }
+
+        item {
+            Seccion("Diagnóstico", Icons.Filled.BugReport, open == "diag", { toggle("diag") }) {
+                DiagnosticoPanel(notifAccess)
+            }
         }
 
         item { Spacer(Modifier.height(8.dp)) }
@@ -257,6 +265,42 @@ private fun NotificacionesPanel(access: Boolean, onOpen: () -> Unit) {
     }
     BotonSecundario("Enviar notificación de prueba", enabled = access) { WatchManager.testNotice() }
     BotonSecundario("Volver a encender avisos en el reloj") { WatchManager.enableNoticesOnWatch() }
+}
+
+// ---------------- Diagnóstico ----------------
+
+@Composable
+private fun DiagnosticoPanel(notifAccess: Boolean) {
+    val ctx = LocalContext.current
+    val lines by WatchManager.log.collectAsState()
+    Text(
+        "Prueba la música, el clima y el menú, y anota exactamente qué responde el reloj. " +
+            "Ten Spotify sonando antes de empezar.",
+        color = TextoSuave
+    )
+    BotonPrincipal("Probar todo") { WatchManager.runDiagnostics(notifAccess) }
+    BotonSecundario("Copiar resultado", enabled = lines.isNotEmpty()) {
+        val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("Diagnóstico Mi Reloj", lines.joinToString("\n")))
+        android.widget.Toast.makeText(ctx, "Copiado. Pégalo en el chat.", android.widget.Toast.LENGTH_SHORT).show()
+    }
+    if (lines.isNotEmpty()) {
+        Box(
+            Modifier.fillMaxWidth().height(320.dp)
+                .background(Fondo, RoundedCornerShape(12.dp))
+                .padding(10.dp)
+        ) {
+            androidx.compose.foundation.text.selection.SelectionContainer {
+                Text(
+                    lines.takeLast(120).joinToString("\n"),
+                    color = TextoSuave,
+                    fontSize = 11.sp,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    modifier = Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())
+                )
+            }
+        }
+    }
 }
 
 // ---------------- Actualizaciones ----------------
