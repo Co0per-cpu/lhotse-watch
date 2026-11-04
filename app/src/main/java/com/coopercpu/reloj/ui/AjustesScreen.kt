@@ -278,7 +278,9 @@ private fun DiagnosticoPanel(notifAccess: Boolean) {
             "Ten Spotify sonando antes de empezar.",
         color = TextoSuave
     )
+    Text("Espera a que aparezca \"=== Fin ===\" antes de copiar (puede tardar hasta 2 minutos).", color = Ambar, fontSize = 12.sp)
     BotonPrincipal("Probar todo") { WatchManager.runDiagnostics(notifAccess) }
+    BotonSecundario("Destrabar comandos") { WatchManager.resetQueue() }
     BotonSecundario("Copiar resultado", enabled = lines.isNotEmpty()) {
         val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
         cm.setPrimaryClip(android.content.ClipData.newPlainText("Diagnóstico Mi Reloj", lines.joinToString("\n")))

@@ -426,7 +426,8 @@ object WatchManager {
                 return IDOOtaGpsInfo(lon.toFloat(), lat.toFloat(), 550f)
             }
         }
-        epo.enableAutoUpgrade = true
+        // Apagada: el ID217G usa GPS u-blox y la actualización automática puede dejar la conexión ocupada
+        epo.enableAutoUpgrade = false
         epo.listenEpoUpgrade(
             { st ->
                 _gpsBusy.value = st != IDOEpoUpgradeStatus.IDLE && st != IDOEpoUpgradeStatus.SUCCESS &&
@@ -455,6 +456,13 @@ object WatchManager {
     }
 
     private fun pct(p: Float): Int = (if (p <= 1f) p * 100 else p).toInt().coerceIn(0, 100)
+
+    /** Vacía la fila de comandos por si quedó trabada. */
+    fun resetQueue() {
+        queue.clear()
+        queueBusy = false
+        dlog("fila vaciada a mano")
+    }
 
     fun updateGps() {
         if (!ready) { say("El reloj no está conectado."); return }
@@ -696,8 +704,11 @@ object WatchManager {
     // ---------- Prueba completa ----------
 
     fun runDiagnostics(notifAccess: Boolean) {
-        clearLog()
+        // No se borra lo anterior: lo que pasó al conectar también sirve
         dlog("=== Diagnóstico Mi Reloj ===")
+        dlog("Sincronización del kit: ${runCatching { sdk.syncData.status.toString() }.getOrDefault("?")}")
+        dlog("GPS (EPO): soportado=${runCatching { IDOEpoManager.shared.isSupported }.getOrDefault(false)} estado=${runCatching { IDOEpoManager.shared.status.toString() }.getOrDefault("?")}")
+        dlog("Fila: ocupada=$queueBusy, esperando=${queue.size}")
         dlog("Conexión: ${_conn.value}, vinculado: ${_bound.value}, preparado: ${_protocolReady.value}")
         dlog("Acceso a notificaciones: ${if (notifAccess) "SÍ" else "NO"}")
         dlog("Música en el teléfono: ${_musicDebug.value}")
@@ -737,8 +748,11 @@ object WatchManager {
                     }
                 }
         }
-        if (menuCmd != null) step("Menú V3: leer", menuCmd) { _, _ -> afterMenu() }
-        else step("Menú V2: leer", Cmds.getMenuList()) { _, _ -> afterMenu() }
+        // Primero un comando simple: si este tampoco responde, el problema es la conexión y no la música
+        step("Datos del día (prueba simple)", Cmds.getLiveData(0)) { _, _ ->
+            if (menuCmd != null) step("Menú V3: leer", menuCmd) { _, _ -> afterMenu() }
+            else step("Menú V2: leer", Cmds.getMenuList()) { _, _ -> afterMenu() }
+        }
     }
 
     // ---------- Ajustes del reloj ----------
