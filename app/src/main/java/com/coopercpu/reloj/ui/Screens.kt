@@ -77,7 +77,12 @@ import com.idosmart.model.IDOBleDeviceModel
 import kotlinx.coroutines.delay
 
 @Composable
-fun AppRoot(permsOk: Boolean, onAskPerms: () -> Unit) {
+fun AppRoot(
+    permsOk: Boolean,
+    onAskPerms: () -> Unit,
+    notifAccess: Boolean,
+    onOpenNotifAccess: () -> Unit
+) {
     val snack = remember { SnackbarHostState() }
     val message by WatchManager.message.collectAsState()
     val bound by WatchManager.bound.collectAsState()
@@ -103,7 +108,7 @@ fun AppRoot(permsOk: Boolean, onAskPerms: () -> Unit) {
                 tab == 0 -> AhoraScreen()
                 tab == 1 -> PulsoScreen()
                 tab == 2 -> EjerciciosScreen()
-                else -> RelojScreen()
+                else -> AjustesScreen(notifAccess, onOpenNotifAccess)
             }
         }
     }
@@ -116,7 +121,7 @@ private fun BottomBar(tab: Int, onTab: (Int) -> Unit) {
         "Ahora" to Icons.Filled.Home,
         "Pulso" to Icons.Filled.Favorite,
         "Ejercicios" to Icons.Filled.DirectionsRun,
-        "Reloj" to Icons.Filled.Watch
+        "Ajustes" to Icons.Filled.Watch
     )
     NavigationBar(containerColor = Tarjeta) {
         items.forEachIndexed { i, (label, icon) ->
@@ -140,7 +145,7 @@ private fun BottomBar(tab: Int, onTab: (Int) -> Unit) {
 // ---------------- Piezas comunes ----------------
 
 @Composable
-private fun Card(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+internal fun Card(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Box(
         modifier
             .fillMaxWidth()
@@ -151,7 +156,7 @@ private fun Card(modifier: Modifier = Modifier, content: @Composable () -> Unit)
 }
 
 @Composable
-private fun Titulo(text: String, sub: String? = null) {
+internal fun Titulo(text: String, sub: String? = null) {
     Column(Modifier.padding(bottom = 4.dp)) {
         Text(text, color = Texto, fontSize = 26.sp, fontWeight = FontWeight.Bold)
         if (sub != null) Text(sub, color = TextoSuave, fontSize = 14.sp)
@@ -159,7 +164,7 @@ private fun Titulo(text: String, sub: String? = null) {
 }
 
 @Composable
-private fun EstadoChip(conn: Conn) {
+internal fun EstadoChip(conn: Conn) {
     val (txt, color) = when (conn) {
         Conn.CONECTADO -> "Conectado" to Verde
         Conn.CONECTANDO -> "Conectando…" to Ambar
@@ -178,7 +183,7 @@ private fun EstadoChip(conn: Conn) {
 }
 
 @Composable
-private fun BotonPrincipal(text: String, enabled: Boolean = true, onClick: () -> Unit) {
+internal fun BotonPrincipal(text: String, enabled: Boolean = true, onClick: () -> Unit) {
     Button(
         onClick = onClick,
         enabled = enabled,
@@ -189,7 +194,7 @@ private fun BotonPrincipal(text: String, enabled: Boolean = true, onClick: () ->
 }
 
 @Composable
-private fun BotonSecundario(text: String, enabled: Boolean = true, onClick: () -> Unit) {
+internal fun BotonSecundario(text: String, enabled: Boolean = true, onClick: () -> Unit) {
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
@@ -580,49 +585,4 @@ private fun Dato(label: String, value: String) {
 @Composable
 private fun Vacio(text: String) {
     Card { Text(text, color = TextoSuave) }
-}
-
-// ---------------- Reloj ----------------
-
-@Composable
-private fun RelojScreen() {
-    val device by WatchManager.device.collectAsState()
-    val conn by WatchManager.conn.collectAsState()
-    var confirm by remember { mutableStateOf(false) }
-
-    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Titulo("Tu reloj")
-        Card {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Watch, null, tint = Rojo, modifier = Modifier.size(32.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(device?.name ?: "Reloj", color = Texto, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                        Text(device?.macAddress ?: "", color = TextoSuave, fontSize = 12.sp)
-                    }
-                    EstadoChip(conn)
-                }
-            }
-        }
-        if (conn == Conn.DESCONECTADO) BotonSecundario("Reconectar") { WatchManager.reconnect() }
-        Card {
-            Text(
-                "Tus datos se guardan solo en este teléfono. Esta app usa el kit oficial de IDO, el fabricante del reloj.",
-                color = TextoSuave
-            )
-        }
-        Spacer(Modifier.weight(1f))
-        BotonSecundario("Desvincular reloj") { confirm = true }
-    }
-
-    if (confirm) {
-        AlertDialog(
-            onDismissRequest = { confirm = false },
-            title = { Text("¿Desvincular?") },
-            text = { Text("El reloj dejará de estar conectado a esta app. Tus datos guardados no se borran.") },
-            confirmButton = { TextButton(onClick = { confirm = false; WatchManager.unbind() }) { Text("Desvincular") } },
-            dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancelar") } }
-        )
-    }
 }

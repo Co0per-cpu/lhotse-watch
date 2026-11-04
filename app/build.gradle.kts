@@ -12,8 +12,8 @@ android {
         applicationId = "com.coopercpu.reloj"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 2
+        versionName = "0.2"
         // El kit de IDO trae librerías nativas solo para estas arquitecturas
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }

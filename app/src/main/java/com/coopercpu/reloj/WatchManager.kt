@@ -11,6 +11,7 @@ import com.idosmart.enums.IDODeviceStateType
 import com.idosmart.enums.IDOLogType
 import com.idosmart.enums.IDOStatusNotification
 import com.idosmart.enums.IDOSyncDataType
+import com.idosmart.model.*
 import com.idosmart.model.IDOBleDeviceModel
 import com.idosmart.model.IDOBluetoothStateModel
 import com.idosmart.model.IDODeviceNotificationModel
@@ -45,7 +46,11 @@ data class Live(
 object WatchManager {
     private const val TAG = "Reloj"
     private lateinit var store: Store
+    lateinit var settings: Settings
+        private set
     private val main = Handler(Looper.getMainLooper())
+    private var userDisconnect = false
+    private lateinit var appCtx: Context
 
     private val _conn = MutableStateFlow(Conn.DESCONECTADO)
     val conn: StateFlow<Conn> = _conn.asStateFlow()
@@ -105,7 +110,9 @@ object WatchManager {
     private var started = false
 
     fun init(context: Context) {
+        appCtx = context.applicationContext
         store = Store(context)
+        settings = Settings(context)
         sdk.init(context)
         sdk.ble.addBleDelegate(bleDelegate)
         sdk.ble.getBluetoothState { }
@@ -140,6 +147,7 @@ object WatchManager {
         if (d != null && _bound.value) {
             _conn.value = Conn.CONECTANDO
             sdk.ble.autoConnect(d)
+            ConexionService.start(appCtx)
         }
     }
 
@@ -220,6 +228,8 @@ object WatchManager {
         _bound.value = true
         _binding.value = false
         say("¡Reloj vinculado! Ahora puedes sincronizar tus datos.")
+        main.postDelayed({ enableNoticesOnWatch() }, 2000)
+        ConexionService.start(appCtx)
     }
 
     private fun bindFail(msg: String) {
@@ -231,6 +241,7 @@ object WatchManager {
         val d = _device.value
         val mac = d?.macAddress
         if (mac == null) { forget(); return }
+        userDisconnect = true
         sdk.cmd.unbind(mac, true) { _ ->
             sdk.ble.cancelConnect(mac) { }
             forget()
@@ -239,6 +250,7 @@ object WatchManager {
     }
 
     private fun forget() {
+        ConexionService.stop(appCtx)
         store.clearDevice()
         _bound.value = false
         _device.value = null
@@ -328,6 +340,156 @@ object WatchManager {
         return true
     }
 
+    // ---------- Notificaciones ----------
+
+    /** Se llama cada vez que el reloj termina de conectarse (lo usa el servicio para el clima). */
+    var onConnectedHook: (() -> Unit)? = null
+
+    private val ready: Boolean
+        get() = _conn.value == Conn.CONECTADO && _bound.value && !_syncing.value
+
+    /** Enciende en el reloj los avisos de llamadas y de todas las apps. */
+    fun enableNoticesOnWatch() {
+        if (_conn.value != Conn.CONECTADO || !_bound.value) return
+        Cmds.setNoticeStatus(IDOSetNoticeStatusModel.createDefaultModel()).send { r ->
+            Log.d(TAG, "avisos encendidos: ${r.error.code}")
+        }
+    }
+
+    private var lastNoticeKey = ""
+    private var lastNoticeAt = 0L
+
+    fun sendNotice(type: Int, title: String, text: String) {
+        if (!ready) return
+        val key = "$type|$title|$text"
+        val now = System.currentTimeMillis()
+        if (key == lastNoticeKey && now - lastNoticeAt < 5000) return   // evita repetidos
+        lastNoticeKey = key; lastNoticeAt = now
+        sdk.cmd.setV2NoticeEvt(type, title.take(40), "", text.take(240)) { ok ->
+            Log.d(TAG, "aviso $type enviado: $ok")
+        }
+    }
+
+    fun sendCall(name: String) {
+        if (!ready) return
+        sdk.cmd.setV2CallEvt(name.take(40), "") { }
+    }
+
+    fun stopCall() {
+        if (_conn.value != Conn.CONECTADO) return
+        sdk.cmd.stopV2CallEvt { }
+    }
+
+    fun testNotice() {
+        if (!ready) { say("El reloj no está conectado."); return }
+        sdk.cmd.setV2NoticeEvt(0x18, "Mi Reloj", "", "¡Las notificaciones funcionan!") { ok ->
+            say(if (ok) "Mira tu reloj." else "El reloj no aceptó la notificación.")
+        }
+    }
+
+    // ---------- Clima ----------
+
+    private val _weatherInfo = MutableStateFlow("")
+    val weatherInfo: StateFlow<String> = _weatherInfo.asStateFlow()
+
+    fun sendWeather(w: WeatherNow, city: String, onDone: (Boolean) -> Unit = {}) {
+        if (!ready) { onDone(false); return }
+        Cmds.setWeatherSwitch(true).send { }
+        val now = java.time.LocalDateTime.now()
+        val done: (Int) -> Unit = { code ->
+            val ok = code == 0
+            if (ok) {
+                settings.lastWeather = System.currentTimeMillis()
+                _weatherInfo.value = "$city: ${w.temp}° (${w.min}°/${w.max}°)"
+            }
+            onDone(ok)
+        }
+        if (sdk.funcTable.setSetV3Weather) {
+            // Formato V3: las temperaturas van con +100, igual que el ejemplo oficial de IDO
+            val p = IDOWeatherV3ParamModel(
+                now.monthValue, now.dayOfMonth, now.hour, now.minute, now.second,
+                now.dayOfWeek.value,
+                w.type,
+                w.temp + 100, w.max + 100, w.min + 100,
+                city.take(30),
+                0,
+                w.rain, w.humidity, w.uv * 10, w.wind, 0,
+                w.sunrise.first, w.sunrise.second, w.sunset.first, w.sunset.second,
+                w.sunTimes.size.coerceAtMost(7),
+                "",
+                w.hours.map { IDOHoursWeatherItem(it.type, it.temp + 100, it.rain) },
+                w.days.drop(1).take(6).map { IDOFutureItem(it.type, it.max + 100, it.min + 100) },
+                w.sunTimes.take(7).map { IDOSunriseItem(it.first.first, it.first.second, it.second.first, it.second.second) },
+                emptyList(),
+                emptyList()
+            )
+            Cmds.setWeatherV3(p).send { r -> done(r.error.code) }
+        } else {
+            val p = IDOWeatherDataParamModel(
+                w.type, w.temp, w.max, w.min, w.humidity, w.uv, 0,
+                w.days.drop(1).take(3).map { IDOWeatherDataFuture(it.type, it.min, it.max) }
+            )
+            Cmds.setWeatherCityName(city.take(30)).send { }
+            Cmds.setWeatherData(p).send { r -> done(r.error.code) }
+        }
+    }
+
+    // ---------- Ajustes del reloj ----------
+
+    private fun reply(label: String): (Int) -> Unit = { code ->
+        say(if (code == 0) "$label: listo en el reloj." else "$label: el reloj no lo aceptó ($code).")
+    }
+
+    fun applyBrightness(level: Int) {
+        if (!ready) { say("El reloj no está conectado."); return }
+        val p = IDOScreenBrightnessModel(level.coerceIn(0, 100), 1, 0, 0, 0, 0, 0, 0, 0, 0)
+        Cmds.setScreenBrightness(p).send { r -> reply("Brillo")(r.error.code) }
+    }
+
+    fun applyRaiseToWake(on: Boolean, seconds: Int) {
+        if (!ready) { say("El reloj no está conectado."); return }
+        val p = IDOUpHandGestureParamModel(if (on) 1 else 0, seconds.coerceIn(2, 30), 0, 0, 0, 0, 0)
+        Cmds.setUpHandGesture(p).send { r -> reply("Levantar para ver")(r.error.code) }
+    }
+
+    fun applyStepGoal(steps: Int) {
+        if (!ready) { say("El reloj no está conectado."); return }
+        Cmds.setSportGoal(IDOSportGoalParamModel(steps, 0, 1)).send { r -> reply("Meta de pasos")(r.error.code) }
+    }
+
+    /** mode: 0 apagado, 1 automático (cada [interval] min), 2 continuo. */
+    fun applyHeartMode(mode: Int, interval: Int) {
+        if (!ready) { say("El reloj no está conectado."); return }
+        val p = IDOHeartRateModeParamModel(mode, 0, 0, 0, 23, 59, interval)
+        Cmds.setHeartRateMode(p).send { r -> reply("Pulso automático")(r.error.code) }
+    }
+
+    fun applyAlarms(list: List<Alarm>) {
+        if (!ready) { say("El reloj no está conectado."); return }
+        val max = sdk.funcTable.alarmCount.takeIf { it > 0 } ?: 5
+        if (list.size > max) { say("Tu reloj acepta hasta $max alarmas."); return }
+        val week = listOf(
+            IDOWeek.MONDAY, IDOWeek.TUESDAY, IDOWeek.WEDNESDAY, IDOWeek.THURSDAY,
+            IDOWeek.FRIDAY, IDOWeek.SATURDAY, IDOWeek.SUNDAY
+        )
+        // El reloj no borra alarmas: las que sobran se mandan ocultas
+        val items = (0 until max).map { i ->
+            val a = list.getOrNull(i)
+            IDOAlarmItem(
+                i + 1, 0,
+                a?.hour ?: 0, a?.minute ?: 0,
+                "Alarma ${i + 1}",
+                a?.on ?: false,
+                HashSet(a?.days?.mapNotNull { week.getOrNull(it - 1) } ?: emptyList()),
+                0, 1,
+                if (a != null) IDOAlarmStatus.DISPLAYED else IDOAlarmStatus.HIDDEN,
+                0,
+                IDOAlarmType.WAKEUP
+            )
+        }
+        Cmds.setAlarmV3(IDOAlarmModel(items)).send { r -> reply("Alarmas")(r.error.code) }
+    }
+
     // ---------- Respuestas del kit IDO ----------
 
     private val bleDelegate = object : IDOBleDelegate {
@@ -346,13 +508,25 @@ object WatchManager {
             when (state.state) {
                 IDODeviceStateType.CONNECTED -> {
                     _conn.value = Conn.CONECTADO
+                    userDisconnect = false
                     main.postDelayed({ refreshLive() }, 1500)
+                    // Al reconectar, manda el clima si ya está viejo
+                    main.postDelayed({ onConnectedHook?.invoke() }, 4000)
                 }
                 IDODeviceStateType.CONNECTING -> _conn.value = Conn.CONECTANDO
                 else -> {
                     _conn.value = Conn.DESCONECTADO
                     _measuring.value = false
                     _syncing.value = false
+                    // Reintenta solo si el reloj se alejó o se cortó la conexión
+                    if (_bound.value && !userDisconnect &&
+                        state.errorState != IDOConnectErrorType.DEVICEALREADYBINDANDNOTSUPPORTREBIND &&
+                        state.errorState != IDOConnectErrorType.DEVICEHASBEENRESET
+                    ) {
+                        main.postDelayed({
+                            if (_conn.value == Conn.DESCONECTADO && _bound.value) reconnect()
+                        }, 15_000)
+                    }
                     when (state.errorState) {
                         IDOConnectErrorType.DEVICEALREADYBINDANDNOTSUPPORTREBIND ->
                             say("El reloj sigue vinculado a otra app (VeryFit). Elimínalo en VeryFit y restablece el reloj de fábrica, luego vuelve a intentarlo.")
