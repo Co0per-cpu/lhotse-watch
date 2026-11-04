@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -104,6 +105,11 @@ fun AjustesScreen(notifAccess: Boolean, onOpenNotifAccess: () -> Unit) {
         item {
             Seccion("Notificaciones", Icons.Filled.Notifications, open == "notif", { toggle("notif") }) {
                 NotificacionesPanel(notifAccess, onOpenNotifAccess)
+            }
+        }
+        item {
+            Seccion("Actualizaciones del reloj", Icons.Filled.SystemUpdate, open == "update", { toggle("update") }) {
+                ActualizacionesPanel()
             }
         }
         item {
@@ -239,6 +245,44 @@ private fun NotificacionesPanel(access: Boolean, onOpen: () -> Unit) {
     }
     BotonSecundario("Enviar notificación de prueba", enabled = access) { WatchManager.testNotice() }
     BotonSecundario("Volver a encender avisos en el reloj") { WatchManager.enableNoticesOnWatch() }
+}
+
+// ---------------- Actualizaciones ----------------
+
+@Composable
+private fun ActualizacionesPanel() {
+    val info by WatchManager.info.collectAsState()
+    val gps by WatchManager.gpsState.collectAsState()
+    val busy by WatchManager.gpsBusy.collectAsState()
+    val conn by WatchManager.conn.collectAsState()
+
+    androidx.compose.runtime.LaunchedEffect(conn) { WatchManager.refreshInfo() }
+
+    Text("Firmware: ${info.firmware.ifBlank { "—" }}", color = Texto)
+    Text("Batería: ${if (info.battery >= 0) "${info.battery}%" else "—"}", color = Texto)
+    Text("GPS (AGPS) actualizado: ${haceCuanto(info.gpsUpdated)}", color = Texto)
+
+    Text(
+        "Los datos AGPS le dicen al reloj dónde están los satélites, así el GPS encuentra tu posición en segundos " +
+            "en vez de minutos. Se actualizan solos cada pocos días; aquí puedes forzarlo.",
+        color = TextoSuave, fontSize = 13.sp
+    )
+    if (busy) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(Modifier.size(20.dp), color = Rojo, strokeWidth = 2.dp)
+            Spacer(Modifier.width(10.dp))
+            Text(gps, color = Texto)
+        }
+    } else {
+        if (gps.isNotBlank()) Text(gps, color = TextoSuave, fontSize = 13.sp)
+        BotonPrincipal("Actualizar GPS del reloj", enabled = conn == Conn.CONECTADO) { WatchManager.updateGps() }
+    }
+
+    Text(
+        "Firmware: el sistema interno del reloj solo lo puede actualizar un archivo oficial del fabricante, " +
+            "y Lhotse ya no publica versiones nuevas para este modelo.",
+        color = TextoSuave, fontSize = 13.sp
+    )
 }
 
 // ---------------- Música ----------------

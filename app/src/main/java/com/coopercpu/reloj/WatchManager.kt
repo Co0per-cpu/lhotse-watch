@@ -20,6 +20,10 @@ import com.idosmart.model.IDOOtaDeviceModel
 import com.idosmart.model.IDOReceiveData
 import com.idosmart.model.IDOSppStateModel
 import com.idosmart.pigeon_implement.Cmds
+import com.idosmart.pigeon_implement.IDOEpoManager
+import com.idosmart.pigeon_implement.IDOEpoManagerDelegate
+import com.idosmart.pigeon_implement.IDOEpoUpgradeStatus
+import com.idosmart.pigeon_implement.IDOOtaGpsInfo
 import com.idosmart.pigeon_implement.IDOMeasureManager
 import com.idosmart.pigeon_implement.IDOMeasureStatus
 import com.idosmart.pigeon_implement.IDOMeasureType
@@ -131,6 +135,8 @@ object WatchManager {
                 else -> {}
             }
         }
+
+        initGps()
 
         _device.value = store.loadDevice()
         _bound.value = store.boundMac().isNotEmpty()
@@ -387,6 +393,80 @@ object WatchManager {
         }
     }
 
+    // ---------- Firmware, batería y GPS (AGPS) ----------
+
+    data class Info(val firmware: String = "", val battery: Int = -1, val gpsUpdated: Long = 0L)
+
+    private val _info = MutableStateFlow(Info())
+    val info: StateFlow<Info> = _info.asStateFlow()
+
+    private val _gpsState = MutableStateFlow("")
+    val gpsState: StateFlow<String> = _gpsState.asStateFlow()
+
+    private val _gpsBusy = MutableStateFlow(false)
+    val gpsBusy: StateFlow<Boolean> = _gpsBusy.asStateFlow()
+
+    fun refreshInfo() {
+        if (_conn.value != Conn.CONECTADO) return
+        sdk.device.refreshDeviceInfo(true) { _ ->
+            val d = sdk.device
+            val fw = listOf(d.fwVersion1, d.fwVersion2, d.fwVersion3).joinToString(".")
+            _info.value = _info.value.copy(firmware = fw, battery = d.battLevel)
+        }
+        IDOEpoManager.shared.lastUpdateTimestamp { t -> _info.value = _info.value.copy(gpsUpdated = t) }
+    }
+
+    /** Datos de satélites (AGPS): con ellos el GPS del reloj encuentra tu posición mucho más rápido. */
+    private fun initGps() {
+        val epo = IDOEpoManager.shared
+        epo.delegateGetGps = object : IDOEpoManagerDelegate {
+            override fun getAppGpsInfo(): IDOOtaGpsInfo {
+                // Posición aproximada: la ciudad del clima (o Santiago si no hay)
+                val lat = settings.lat.takeIf { it != 0.0 } ?: -33.45
+                val lon = settings.lon.takeIf { it != 0.0 } ?: -70.66
+                return IDOOtaGpsInfo(lon.toFloat(), lat.toFloat(), 550f)
+            }
+        }
+        epo.enableAutoUpgrade = true
+        epo.listenEpoUpgrade(
+            { st ->
+                _gpsBusy.value = st != IDOEpoUpgradeStatus.IDLE && st != IDOEpoUpgradeStatus.SUCCESS &&
+                    st != IDOEpoUpgradeStatus.FAILURE
+                _gpsState.value = when (st) {
+                    IDOEpoUpgradeStatus.READY -> "Preparando…"
+                    IDOEpoUpgradeStatus.DOWNING -> "Descargando datos de satélites…"
+                    IDOEpoUpgradeStatus.MAKING -> "Preparando el archivo…"
+                    IDOEpoUpgradeStatus.SENDING -> "Enviando al reloj…"
+                    IDOEpoUpgradeStatus.INSTALLING -> "El reloj lo está instalando…"
+                    IDOEpoUpgradeStatus.SUCCESS -> "GPS actualizado."
+                    IDOEpoUpgradeStatus.FAILURE -> "No se pudo actualizar el GPS."
+                    else -> _gpsState.value
+                }
+            },
+            { p -> _gpsState.value = "Descargando… ${pct(p)}%" },
+            { p -> _gpsState.value = "Enviando al reloj… ${pct(p)}%" },
+            { code ->
+                _gpsBusy.value = false
+                if (code == 0) {
+                    _gpsState.value = "GPS actualizado."
+                    IDOEpoManager.shared.lastUpdateTimestamp { t -> _info.value = _info.value.copy(gpsUpdated = t) }
+                } else _gpsState.value = "No se pudo actualizar el GPS (código $code)."
+            }
+        )
+    }
+
+    private fun pct(p: Float): Int = (if (p <= 1f) p * 100 else p).toInt().coerceIn(0, 100)
+
+    fun updateGps() {
+        if (!ready) { say("El reloj no está conectado."); return }
+        if (!IDOEpoManager.shared.isSupported) { say("Tu reloj no usa datos AGPS."); return }
+        val bat = _info.value.battery
+        if (bat in 0..29) { say("Carga el reloj sobre 30% antes de actualizar."); return }
+        _gpsBusy.value = true
+        _gpsState.value = "Empezando…"
+        IDOEpoManager.shared.willStartInstall(true, 1)
+    }
+
     // ---------- Música ----------
 
     fun enableMusicOnWatch() {
@@ -530,6 +610,7 @@ object WatchManager {
                     // Al reconectar, manda el clima si ya está viejo y la canción actual
                     main.postDelayed({ onConnectedHook?.invoke() }, 4000)
                     main.postDelayed({ enableMusicOnWatch() }, 6000)
+                    main.postDelayed({ refreshInfo() }, 3000)
                 }
                 IDODeviceStateType.CONNECTING -> _conn.value = Conn.CONECTANDO
                 else -> {
