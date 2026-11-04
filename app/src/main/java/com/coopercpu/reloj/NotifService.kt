@@ -12,6 +12,14 @@ class NotifService : NotificationListenerService() {
 
     private var callKey: String? = null
 
+    override fun onListenerConnected() {
+        MusicBridge.start(this)
+    }
+
+    override fun onListenerDisconnected() {
+        MusicBridge.stop()
+    }
+
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         try {
             if (sbn.packageName == packageName) return

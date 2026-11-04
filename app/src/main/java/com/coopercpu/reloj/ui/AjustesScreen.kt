@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.AlertDialog
@@ -103,6 +104,11 @@ fun AjustesScreen(notifAccess: Boolean, onOpenNotifAccess: () -> Unit) {
         item {
             Seccion("Notificaciones", Icons.Filled.Notifications, open == "notif", { toggle("notif") }) {
                 NotificacionesPanel(notifAccess, onOpenNotifAccess)
+            }
+        }
+        item {
+            Seccion("Música y buscar teléfono", Icons.Filled.MusicNote, open == "musica", { toggle("musica") }) {
+                MusicaPanel(notifAccess, onOpenNotifAccess)
             }
         }
         item {
@@ -233,6 +239,29 @@ private fun NotificacionesPanel(access: Boolean, onOpen: () -> Unit) {
     }
     BotonSecundario("Enviar notificación de prueba", enabled = access) { WatchManager.testNotice() }
     BotonSecundario("Volver a encender avisos en el reloj") { WatchManager.enableNoticesOnWatch() }
+}
+
+// ---------------- Música ----------------
+
+@Composable
+private fun MusicaPanel(access: Boolean, onOpen: () -> Unit) {
+    Text(
+        "Cuando suena Spotify (u otra app de música), el reloj muestra la canción y el artista, " +
+            "y desde la pantalla de Música del reloj puedes pausar, cambiar de canción y subir o bajar el volumen.",
+        color = TextoSuave
+    )
+    Text(
+        "Si usas \"Buscar teléfono\" en el reloj, el teléfono suena y vibra fuerte por 30 segundos.",
+        color = TextoSuave
+    )
+    if (!access) {
+        Text("Para esto también se necesita el acceso a notificaciones.", color = Ambar, fontSize = 13.sp)
+        BotonPrincipal("Dar acceso", onClick = onOpen)
+    } else {
+        BotonSecundario("Enviar la canción actual al reloj") {
+            WatchManager.enableMusicOnWatch()
+        }
+    }
 }
 
 // ---------------- Clima ----------------

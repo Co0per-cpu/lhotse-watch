@@ -387,6 +387,23 @@ object WatchManager {
         }
     }
 
+    // ---------- Música ----------
+
+    fun enableMusicOnWatch() {
+        if (!ready) return
+        Cmds.setMusicOnOff(IDOMusicOnOffParamModel(1, 1)).send { r ->
+            Log.d(TAG, "música en el reloj: ${r.error.code}")
+            MusicBridge.send(force = true)
+        }
+    }
+
+    /** status: 1 sonando, 2 pausa, 3 detenido. */
+    fun sendMusic(status: Int, pos: Int, total: Int, title: String, artist: String) {
+        if (!ready) return
+        val p = IDOMusicControlParamModel(status, pos, total, title.take(60), artist.take(60))
+        Cmds.musicControl(p).send { }
+    }
+
     // ---------- Clima ----------
 
     private val _weatherInfo = MutableStateFlow("")
@@ -510,8 +527,9 @@ object WatchManager {
                     _conn.value = Conn.CONECTADO
                     userDisconnect = false
                     main.postDelayed({ refreshLive() }, 1500)
-                    // Al reconectar, manda el clima si ya está viejo
+                    // Al reconectar, manda el clima si ya está viejo y la canción actual
                     main.postDelayed({ onConnectedHook?.invoke() }, 4000)
+                    main.postDelayed({ enableMusicOnWatch() }, 6000)
                 }
                 IDODeviceStateType.CONNECTING -> _conn.value = Conn.CONECTANDO
                 else -> {
@@ -564,7 +582,11 @@ object WatchManager {
         override fun checkDeviceBindState(macAddress: String): Boolean =
             store.boundMac().equals(macAddress, ignoreCase = true)
 
-        override fun listenDeviceNotification(status: IDODeviceNotificationModel) {}
+        override fun listenDeviceNotification(status: IDODeviceNotificationModel) {
+            val evt = status.controlEvt ?: return
+            Log.d(TAG, "control del reloj: $evt ${status.controlJson}")
+            main.post { MusicBridge.onWatchControl(evt, status.controlJson) }
+        }
         override fun listenWaitingOtaDevice(otaDevice: IDOOtaDeviceModel) {}
     }
 }

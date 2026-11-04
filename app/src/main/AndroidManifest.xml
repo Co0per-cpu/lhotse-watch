@@ -18,7 +18,15 @@
     <!-- Mantener la conexión con el reloj en segundo plano -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
+    <!-- Permiso que Lumi debe pedir (y tú aprobar) para leer los datos del reloj -->
+    <permission
+        android:name="com.coopercpu.reloj.permission.DATOS"
+        android:label="Datos de Mi Reloj"
+        android:description="@string/permiso_datos"
+        android:protectionLevel="dangerous" />
 
     <application
         android:name=".App"
@@ -39,6 +47,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <provider
+            android:name=".DatosProvider"
+            android:authorities="com.coopercpu.reloj.datos"
+            android:exported="true"
+            android:readPermission="com.coopercpu.reloj.permission.DATOS"
+            android:writePermission="com.coopercpu.reloj.permission.DATOS" />
 
         <service
             android:name=".ConexionService"
