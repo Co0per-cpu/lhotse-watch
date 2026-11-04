@@ -648,25 +648,28 @@ object WatchManager {
                 emptyList(),
                 emptyList()
             )
-            step("Clima V3", Cmds.setWeatherV3(p))
+            Cmds.setWeatherV3(p)
         }
         val v2 = {
             val p = IDOWeatherDataParamModel(
                 w.type, w.temp, w.max, w.min, w.humidity, w.uv, 0,
                 w.days.drop(1).take(3).map { IDOWeatherDataFuture(it.type, it.min, it.max) }
             )
-            step("Clima V2", Cmds.setWeatherData(p))
+            Cmds.setWeatherData(p)
         }
         // Enciende el clima en el reloj, manda la ciudad y prueba los dos formatos
         step("Clima: encender", Cmds.setWeatherSwitch(true)) { _, _ ->
             step("Clima: ciudad", Cmds.setWeatherCityName(city.take(30))) { _, _ ->
                 val preferV3 = sdk.funcTable.setSetV3Weather || !sdk.funcTable.supportSetWeatherDataV2
-                val a = if (preferV3) v3 else v2
-                val b = if (preferV3) v2 else v3
-                step("Clima: ${if (preferV3) "V3" else "V2"}", a()) { c, r ->
-                    if (setOk(c, r)) ok()
-                    else step("Clima: ${if (preferV3) "V2" else "V3"} (respaldo)", b()) { c2, r2 ->
-                        if (setOk(c2, r2)) ok() else onDone(false)
+                if (preferV3) {
+                    step("Clima: V3", v3()) { c, r ->
+                        if (setOk(c, r)) ok()
+                        else step("Clima: V2 (respaldo)", v2()) { c2, r2 -> if (setOk(c2, r2)) ok() else onDone(false) }
+                    }
+                } else {
+                    step("Clima: V2", v2()) { c, r ->
+                        if (setOk(c, r)) ok()
+                        else step("Clima: V3 (respaldo)", v3()) { c2, r2 -> if (setOk(c2, r2)) ok() else onDone(false) }
                     }
                 }
             }
