@@ -469,10 +469,16 @@ object WatchManager {
 
     // ---------- Música ----------
 
+    /** Lo que pasó con la música, para la pantalla de diagnóstico. */
+    private val _musicDebug = MutableStateFlow("Todavía no se envió nada.")
+    val musicDebug: StateFlow<String> = _musicDebug.asStateFlow()
+    fun noteMusic(text: String) { _musicDebug.value = text }
+
     fun enableMusicOnWatch() {
-        if (!ready) return
+        if (!ready) { noteMusic("No se envió: el reloj no está conectado."); return }
         Cmds.setMusicOnOff(IDOMusicOnOffParamModel(1, 1)).send { r ->
             Log.d(TAG, "música en el reloj: ${r.error.code}")
+            noteMusic("Música activada en el reloj: código ${r.error.code}")
             MusicBridge.send(force = true)
         }
     }
@@ -481,7 +487,71 @@ object WatchManager {
     fun sendMusic(status: Int, pos: Int, total: Int, title: String, artist: String) {
         if (!ready) return
         val p = IDOMusicControlParamModel(status, pos, total, title.take(60), artist.take(60))
-        Cmds.musicControl(p).send { }
+        Cmds.musicControl(p).send { r ->
+            noteMusic("Última canción enviada: \"${title.ifBlank { "(sin título)" }}\" — código ${r.error.code}")
+        }
+    }
+
+    // ---------- Menú del reloj ----------
+
+    data class Menu(val items: List<Int>, val min: Int, val max: Int, val v3: Boolean)
+
+    private val _menu = MutableStateFlow<Menu?>(null)
+    val menu: StateFlow<Menu?> = _menu.asStateFlow()
+
+    fun loadMenu() {
+        if (!ready) { say("El reloj no está conectado."); return }
+        val ft = sdk.funcTable
+        if (ft.supportProtocolV3MenuList) {
+            Cmds.getMenuListV3().send { r ->
+                val m = r.res
+                if (r.error.code == 0 && m != null) {
+                    _menu.value = Menu((m.itemList ?: emptyList()).filter { it > 0 }, m.minShowNum, m.maxShowNum.takeIf { it > 0 } ?: m.supportMaxNum, true)
+                } else say("El reloj no entregó su menú (${r.error.code}).")
+            }
+        } else {
+            Cmds.getMenuList().send { r ->
+                val m = r.res
+                if (r.error.code == 0 && m != null) {
+                    _menu.value = Menu((m.items ?: emptyList()).sortedBy { it.index }.map { it.value }.filter { it > 0 }, m.minShowNum, m.maxShowNum.takeIf { it > 0 } ?: m.maxNum, false)
+                } else say("Tu reloj no permite leer el menú (${r.error.code}).")
+            }
+        }
+    }
+
+    fun saveMenu(items: List<Int>) {
+        if (!ready) { say("El reloj no está conectado."); return }
+        val m = _menu.value
+        if (m != null && m.min > 0 && items.size < m.min) { say("El reloj necesita al menos ${m.min} pantallas."); return }
+        if (m != null && m.max > 0 && items.size > m.max) { say("Tu reloj acepta hasta ${m.max} pantallas."); return }
+        val done: (Int) -> Unit = { code ->
+            if (code == 0) { _menu.value = m?.copy(items = items); say("Menú actualizado en el reloj.") }
+            else say("El reloj no aceptó el menú ($code). Puede que alguna pantalla no exista en tu modelo.")
+        }
+        if (m?.v3 != false && sdk.funcTable.supportProtocolV3MenuList) {
+            Cmds.setMenuListV3(items).send { r -> done(r.error.code) }
+        } else {
+            Cmds.setMenuList(IDOMenuListParamModel(items)).send { r -> done(r.error.code) }
+        }
+    }
+
+    /** Resumen de lo que declara soportar el firmware (para diagnóstico). */
+    fun capabilities(): List<Pair<String, Boolean>> {
+        if (_conn.value != Conn.CONECTADO) return emptyList()
+        val f = sdk.funcTable
+        return listOf(
+            "Control de música" to f.setBleControlMusic,
+            "Música V3" to f.getSupportV3BleMusic,
+            "Clima V3" to f.setSetV3Weather,
+            "Clima V2" to f.supportSetWeatherDataV2,
+            "Ciudad del clima" to f.setWeatherCity,
+            "Menú V3" to f.supportProtocolV3MenuList,
+            "Menú V2" to f.getMenuList,
+            "Avisos (ANCS)" to f.reminderAncs,
+            "Brillo" to f.setScreenBrightness,
+            "Levantar para ver" to f.getUpHandGesture,
+            "Esferas con foto" to f.setWallpaperDial,
+        )
     }
 
     // ---------- Clima ----------

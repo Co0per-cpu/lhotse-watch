@@ -45,6 +45,10 @@ object MusicBridge {
 
     private val tick = object : Runnable {
         override fun run() {
+            // Revisa si empezó a sonar otra app (por ejemplo, abriste Spotify después)
+            try {
+                msm?.getActiveSessions(ComponentName(ctx, NotifService::class.java))?.let { pick(it) }
+            } catch (_: Exception) {}
             if (controller?.playbackState?.state == PlaybackState.STATE_PLAYING) send(force = true)
             main.postDelayed(this, 10_000)
         }
@@ -63,6 +67,7 @@ object MusicBridge {
             main.postDelayed(tick, 10_000)
         } catch (e: SecurityException) {
             Log.w(TAG, "sin acceso a la música", e)
+            WatchManager.noteMusic("Sin acceso a notificaciones: no puedo ver la música.")
         }
     }
 
@@ -80,6 +85,10 @@ object MusicBridge {
             ?: list.firstOrNull { it.packageName == "com.spotify.music" }
             ?: list.firstOrNull()
         if (best?.sessionToken == controller?.sessionToken) return
+        WatchManager.noteMusic(
+            if (best == null) "No hay ninguna app de música abierta."
+            else "Reproductor detectado: ${if (best.packageName == "com.spotify.music") "Spotify" else best.packageName}"
+        )
         controller?.unregisterCallback(callback)
         controller = best
         best?.registerCallback(callback, main)

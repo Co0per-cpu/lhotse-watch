@@ -32,6 +32,12 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.ViewCarousel
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -106,6 +112,12 @@ fun AjustesScreen(notifAccess: Boolean, onOpenNotifAccess: () -> Unit) {
             Seccion("Notificaciones", Icons.Filled.Notifications, open == "notif", { toggle("notif") }) {
                 NotificacionesPanel(notifAccess, onOpenNotifAccess)
             }
+        }
+        item {
+            Seccion("Pantallas del reloj", Icons.Filled.ViewCarousel, open == "menu", { toggle("menu") }) { MenuPanel() }
+        }
+        item {
+            Seccion("Apariencia de la app", Icons.Filled.Palette, open == "apariencia", { toggle("apariencia") }) { AparienciaPanel() }
         }
         item {
             Seccion("Actualizaciones del reloj", Icons.Filled.SystemUpdate, open == "update", { toggle("update") }) {
@@ -306,6 +318,121 @@ private fun MusicaPanel(access: Boolean, onOpen: () -> Unit) {
             WatchManager.enableMusicOnWatch()
         }
     }
+    Text(
+        "Si en el reloj no ves la pantalla de Música, agrégala en \"Pantallas del reloj\".",
+        color = TextoSuave, fontSize = 13.sp
+    )
+    val debug by WatchManager.musicDebug.collectAsState()
+    Text("Diagnóstico: $debug", color = TextoSuave, fontSize = 12.sp)
+}
+
+// ---------------- Pantallas del reloj ----------------
+
+/** Pantallas que se pueden mostrar en el reloj (códigos oficiales de IDO). */
+private val PANTALLAS = linkedMapOf(
+    1 to "Pasos", 2 to "Pulso", 3 to "Sueño", 4 to "Cámara", 5 to "Alarma", 6 to "Música",
+    7 to "Cronómetro", 8 to "Temporizador", 9 to "Deportes", 10 to "Clima", 11 to "Respiración",
+    12 to "Buscar teléfono", 13 to "Estrés", 14 to "Anillos de actividad", 15 to "Hora",
+    16 to "Última actividad", 17 to "Datos de salud", 18 to "Oxígeno en sangre", 19 to "Ajustes",
+    22 to "Calorías", 23 to "Distancia", 24 to "Medición rápida", 29 to "Recordatorios",
+    36 to "Hora mundial", 37 to "Asistente de voz", 41 to "Ciclo menstrual",
+)
+
+private fun nombrePantalla(id: Int) = PANTALLAS[id] ?: "Pantalla #$id"
+
+@Composable
+private fun MenuPanel() {
+    val menu by WatchManager.menu.collectAsState()
+    val conn by WatchManager.conn.collectAsState()
+    var items by remember(menu) { mutableStateOf(menu?.items ?: emptyList()) }
+    var adding by remember { mutableStateOf(false) }
+
+    androidx.compose.runtime.LaunchedEffect(conn) { if (conn == Conn.CONECTADO && menu == null) WatchManager.loadMenu() }
+
+    Text(
+        "Elige qué pantallas aparecen al deslizar en el reloj y en qué orden. " +
+            "Aquí puedes agregar Música o Clima si tu reloj no las muestra.",
+        color = TextoSuave
+    )
+    if (menu == null) {
+        BotonSecundario("Leer pantallas del reloj", enabled = conn == Conn.CONECTADO) { WatchManager.loadMenu() }
+        return
+    }
+    menu?.let { m ->
+        if (m.max > 0) Text("Tu reloj acepta ${if (m.min > 0) "entre ${m.min} y " else "hasta "}${m.max} pantallas.", color = TextoSuave, fontSize = 12.sp)
+    }
+
+    items.forEachIndexed { i, id ->
+        Row(
+            Modifier.fillMaxWidth().background(Borde, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("${i + 1}. ${nombrePantalla(id)}", color = Texto, modifier = Modifier.weight(1f))
+            IconButton(onClick = {
+                if (i > 0) items = items.toMutableList().also { l -> l.add(i - 1, l.removeAt(i)) }
+            }, enabled = i > 0) { Icon(Icons.Filled.ArrowUpward, "Subir", tint = TextoSuave) }
+            IconButton(onClick = {
+                if (i < items.lastIndex) items = items.toMutableList().also { l -> l.add(i + 1, l.removeAt(i)) }
+            }, enabled = i < items.lastIndex) { Icon(Icons.Filled.ArrowDownward, "Bajar", tint = TextoSuave) }
+            IconButton(onClick = { items = items - id }) { Icon(Icons.Filled.Close, "Quitar", tint = TextoSuave) }
+        }
+    }
+
+    if (adding) {
+        Text("Toca una pantalla para agregarla:", color = Texto)
+        PANTALLAS.filterKeys { it !in items }.forEach { (id, name) ->
+            Row(
+                Modifier.fillMaxWidth().background(Tarjeta, RoundedCornerShape(12.dp))
+                    .border(1.dp, Borde, RoundedCornerShape(12.dp))
+                    .clickable { items = items + id; adding = false }
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Filled.Add, null, tint = Rojo)
+                Spacer(Modifier.width(8.dp))
+                Text(name, color = Texto)
+                if (id == 6 || id == 10) {
+                    Spacer(Modifier.width(8.dp))
+                    Text("recomendada", color = Rojo, fontSize = 12.sp)
+                }
+            }
+        }
+        BotonSecundario("Cancelar") { adding = false }
+    } else {
+        BotonSecundario("Agregar pantalla") { adding = true }
+    }
+    BotonPrincipal("Guardar en el reloj") { WatchManager.saveMenu(items) }
+    Text(
+        "Si el reloj rechaza una pantalla es porque tu modelo no la tiene. Quítala y vuelve a guardar.",
+        color = TextoSuave, fontSize = 12.sp
+    )
+}
+
+// ---------------- Apariencia ----------------
+
+@Composable
+private fun AparienciaPanel() {
+    val s = WatchManager.settings
+    Text("Color de la app", color = Texto)
+    ACENTOS.chunked(4).forEach { fila ->
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        fila.forEach { (_, argb) ->
+            val c = Color(argb.toInt())
+            val sel = acentoActual.value == c
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .background(c, CircleShape)
+                    .border(if (sel) 3.dp else 0.dp, if (sel) Color.White else Color.Transparent, CircleShape)
+                    .clickable {
+                        acentoActual.value = c
+                        s.accent = argb
+                    }
+            )
+        }
+    }
+    }
+    Text("El color se aplica al instante en toda la app.", color = TextoSuave, fontSize = 12.sp)
 }
 
 // ---------------- Clima ----------------

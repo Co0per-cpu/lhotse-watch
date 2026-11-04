@@ -97,6 +97,14 @@ class Settings(context: Context) {
         get() = p.getInt("step_goal", 8000)
         set(v) = p.edit().putInt("step_goal", v).apply()
 
+    // Apariencia de la app
+    var accent: Long
+        get() = p.getLong("accent", 0xFFFF4D5EL)
+        set(v) = p.edit().putLong("accent", v).apply()
+    var compact: Boolean
+        get() = p.getBoolean("compact", false)
+        set(v) = p.edit().putBoolean("compact", v).apply()
+
     // Alarmas
     var alarms: List<Alarm>
         get() = try {

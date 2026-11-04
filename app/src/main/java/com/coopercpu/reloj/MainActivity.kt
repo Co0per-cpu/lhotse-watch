@@ -79,6 +79,8 @@ class MainActivity : ComponentActivity() {
             askPostNotifications()
         } else askPerms.launch(needed)
 
+        com.coopercpu.reloj.ui.acentoActual.value =
+            androidx.compose.ui.graphics.Color(WatchManager.settings.accent.toInt())
         setContent {
             RelojTheme {
                 AppRoot(
